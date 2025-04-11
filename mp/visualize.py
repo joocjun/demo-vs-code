@@ -113,8 +113,11 @@ def main(cfg: Config):
         T = data['T']  # T = cam_from_tag
 
     # load computed trajectory (output of client.py)
-    with open(cfg.traj_path, 'rb') as fp:
-        traj = pickle.load(fp)
+    try:
+        with open(cfg.traj_path, 'rb') as fp:
+            traj = pickle.load(fp)
+    except FileNotFoundError:
+        traj=None
 
     # optionally show the point cloud.
     if cfg.show_cloud:
@@ -122,17 +125,18 @@ def main(cfg: Config):
         clouds = [np2o3d_img2pcd(c, d, K,
                                  np.eye(4)) for (c, d) in
                   zip(color, depth)]
-
+        
     # apply camera transform to `kpt`
     ps = []
-    for c, k, r in zip(traj['cam'],
-                       traj['kpt'],
-                       traj['rgt']):
-        c = np.asarray(c)
-        k = np.asarray(k)
-        t = c.reshape(-1, 1, 3)[-1]
-        p = k.reshape(-1, 21, 3)[-1] + t
-        ps.append(p)
+    if traj is not None:
+        for c, k, r in zip(traj['cam'],
+                        traj['kpt'],
+                        traj['rgt']):
+            c = np.asarray(c)
+            k = np.asarray(k)
+            t = c.reshape(-1, 1, 3)[-1]
+            p = k.reshape(-1, 21, 3)[-1] + t
+            ps.append(p)
 
     vis = o3d.visualization.Visualizer()
     vis.create_window()
@@ -142,31 +146,35 @@ def main(cfg: Config):
     axis.transform(T)
     vis.add_geometry(axis)
 
-    pose = o3d.geometry.TriangleMesh.create_coordinate_frame(0.1)
-    vis.add_geometry(pose)
-    Ts = pose_from_kpt(np.stack(ps, axis=0))
+    if traj is not None:
+        pose = o3d.geometry.TriangleMesh.create_coordinate_frame(0.1)
+        vis.add_geometry(pose)
+        Ts = pose_from_kpt(np.stack(ps, axis=0))
 
-    # Hand keypoints visualization
-    kpts = o3d.geometry.PointCloud()
-    kpts.points = o3d.utility.Vector3dVector(ps[0])
-    kpts.colors = o3d.utility.Vector3dVector(np.zeros_like(ps[0]))
-    vis.add_geometry(kpts)
+        # Hand keypoints visualization
+        kpts = o3d.geometry.PointCloud()
+        kpts.points = o3d.utility.Vector3dVector(ps[0])
+        kpts.colors = o3d.utility.Vector3dVector(np.zeros_like(ps[0]))
+        vis.add_geometry(kpts)
 
     if cfg.show_cloud:
         cloud = o3d.geometry.PointCloud()
         vis.add_geometry(cloud)
 
     for j in range(100000):
-        i = j % len(ps)
 
-        p = o3d.geometry.TriangleMesh.create_coordinate_frame(0.1)
-        p.transform(Ts[i])
-        pose.vertices = p.vertices
-        vis.update_geometry(pose)
+        if traj is not None:
+            i = j % len(ps)
+            p = o3d.geometry.TriangleMesh.create_coordinate_frame(0.1)
+            p.transform(Ts[i])
+            pose.vertices = p.vertices
+            vis.update_geometry(pose)
 
-        # keypoints
-        kpts.points = o3d.utility.Vector3dVector(ps[i])
-        vis.update_geometry(kpts)
+            # keypoints
+            kpts.points = o3d.utility.Vector3dVector(ps[i])
+            vis.update_geometry(kpts)
+        else:
+            i=0
 
         # point cloud (optional)
         if cfg.show_cloud:

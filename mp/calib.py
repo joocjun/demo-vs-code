@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 import cv2
+import pickle
 from dt_apriltags import Detector
 
 from config import oc_cli
@@ -17,15 +18,16 @@ from cam import MultiRSCamera, CameraConfig
 class Config:
     # tag params
     tag_family: str = 'tag36h11'
-    tag_size: float = 0.159
+    tag_size: float = 0.135
     tag_id: int = 0
 
     # cam params
     cam: CameraConfig = CameraConfig()
-    device_id: str = '233622074125'
+    device_id: str = '043322071286'
 
     # app params
     cam_path: str = '/tmp/cam.json'
+    img_path: Optional[str]=None
 
 
 def rgb2gray(rgb: np.ndarray) -> np.ndarray:
@@ -76,11 +78,9 @@ def main(cfg: Config):
         families=cfg.tag_family,
         quad_decimate=1
     )
-
     with MultiRSCamera(cam_cfg).open() as cam:
         frame = cam()
         prev_stamp = frame['stamp']
-
         while True:
             frame = cam()
             stamp = frame['stamp']
@@ -100,12 +100,27 @@ def main(cfg: Config):
 
             # save cam_from_tag transform to `out_file`.
             if T is not None:
+                if cfg.img_path is not None:
+                    Path(cfg.img_path).mkdir(parents=True,exist_ok=True)
+                    cv2.imwrite(F'{cfg.img_path}/color.png', color)
+                    depth_u16 = (
+                        frame['depth'][0] *
+                        cam_cfg.cams[0].depth_scale).astype(
+                        np.uint16)
+                    cv2.imwrite(F'{cfg.img_path}/depth.png', depth_u16)
+
                 Path(cfg.cam_path).parent.mkdir(parents=True,
                                                 exist_ok=True)
+                K = cam.Ks.squeeze(axis=0)
                 with open(cfg.cam_path, 'w') as fp:
-                    K = cam.Ks.squeeze(axis=0)
                     json.dump(dict(K=K.tolist(), T=T.tolist()), fp)
+
+                with open(cfg.cam_path[:-4] + "pkl", 'wb') as fp: 
+                    pickle.dump(dict(K=K, T=T), fp)
+            
                 return
+            
+
 
 
 if __name__ == '__main__':

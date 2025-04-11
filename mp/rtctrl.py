@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 from dataclasses import dataclass
+import xmlrpc.client
 from config import oc_cli
 from cam import MultiRSCamera, CameraConfig
 from functools import partial
@@ -13,13 +14,22 @@ import json
 import pickle
 import threading
 
+import xmlrpc
 from xmlrpc.server import SimpleXMLRPCServer
 from xmlrpc.server import SimpleXMLRPCRequestHandler
 from xmlrpc.client import ServerProxy
 
 
+
 class RequestHandler(SimpleXMLRPCRequestHandler):
     rpc_paths = ('/RPC2',)
+
+
+@dataclass
+class StateCache:
+    prev_stamp: np.ndarray = np.array([1.74434292e+12])
+    ps_world_right: np.ndarray = np.zeros((21,3))
+    ps_world_left: np.ndarray = np.zeros((21,3))
 
 
 @dataclass
@@ -33,18 +43,19 @@ class Config:
     warmup: float = 1.0
 
     # host: str = '137.68.192.166'
-    host: str = 'localhost'
+    host: str = '137.68.191.117'
     port: int = 8001
+
+    host_in: str = 'localhost'
     port_in: int = 8002
     cam_path: str = '/tmp/cam.json'
     img_path: str = '/tmp/docker/img.png'
-    out_path: str = '/tmp/docker/out.pkl'
+    out_path: str = 'out.pkl'
     vid_mode: bool = False
 
 
 @oc_cli
 def main(cfg: Config):
-
     with open(cfg.cam_path, 'r') as fp:
         data = json.load(fp)
         data = {k: np.asarray(v, dtype=np.float32)
@@ -82,6 +93,7 @@ def main(cfg: Config):
         vis.add_geometry(kpts)
 
     with MultiRSCamera(cam_cfg).open() as cam:
+        
         # warm-up
         n_warmup = int(max(1, cfg.warmup / 0.025))
         for _ in range(n_warmup):
@@ -89,30 +101,34 @@ def main(cfg: Config):
             frame = cam()
         prev_stamp = frame['stamp']
 
-        with SimpleXMLRPCServer((cfg.host, cfg.port_in),
+        with SimpleXMLRPCServer((cfg.host_in, cfg.port_in),
                                 requestHandler=RequestHandler) as server:
-            state = {'prev_stamp': prev_stamp,
-                     'ps_world': np.zeros((21, 3))
-                     }
+            # state = {'prev_stamp': prev_stamp,
+            #          'ps_world': np.zeros((21, 3))
+            #          }
 
-            def on_kpt(state):
-                return state['ps_world'].tolist()
+            state: StateCache = StateCache()
+
+            def on_kpt(state: StateCache):
+                return state.ps_world_right.tolist(), state.ps_world_left.tolist()
+                # return state['ps_world'].tolist()
             server.register_introspection_functions()
             server.register_function(partial(on_kpt, state=state),
                                      'kpt')
 
-            # loop...
-
-            def step(state):
+            
+            def step(state: StateCache):
                 frame = cam()
 
                 # Skip old (or not sufficiently new) frames.
                 stamp = frame['stamp']
-                dt = stamp - state['prev_stamp']
+                dt = stamp - state.prev_stamp
+                
                 is_new = (np.greater(dt, 1000.0 / cfg.fps).all())
                 if not is_new:
                     return
-                state['prev_stamp'] = stamp
+                # state['prev_stamp'] = stamp
+                state.prev_stamp = stamp
 
                 # process frames.
                 count: int = len(frame['stamp'])
@@ -136,27 +152,42 @@ def main(cfg: Config):
                     if cfg.vid_mode:
                         # {vid}
                         with open(cfg.vid_path, 'rb') as fp:
+                            # send_file()
                             resp = requests.post(
                                 F'http://{cfg.host}:{cfg.port}',
                                 files=dict(file=fp),
                                 data=dict(focal=float(fx)))
+                            
+
                         traj = resp.json()
                     else:
                         # {img}
-                        out = predictor.hand_img(cfg.img_path,
-                                                 cfg.out_path,
-                                                 float(fx))
-                        with open(str(cfg.out_path), 'rb') as fp:
-                            data = [pickle.load(fp)]
-                        traj = []
-                        for datum in data:
-                            if datum is None:
-                                continue
-                            det = dict(kpt=datum['pred_keypoints_3d'],
-                                       cam=datum['pred_cam_t_full'],
-                                       rgt=datum['is_rights'])
-                            traj.append(det)
+                        color_np = color_rgb[..., ::-1]
+                        binary_data = xmlrpc.client.Binary(color_np.tobytes())
+                       
+                         
+                        out = predictor.hand_img(binary_data, 
+                                                    cfg.out_path,
+                                                    float(fx))
 
+                        
+                        traj = []
+                        if out == 'None':
+                            pass 
+                        else: 
+                            data = [json.loads(out)]
+                            for datum in data:
+                                if datum is None:
+                                    continue
+                                det = dict(kpt=datum['pred_keypoints_3d'],
+                                        cam=datum['pred_cam_t_full'],
+                                        rgt=datum['is_rights'])
+                                traj.append(det)
+
+                    
+                    if len(traj) == 0:
+                        return
+                    
                     # <- interpret `traj` from srv ->
                     ps = []
                     rs = []
@@ -164,31 +195,50 @@ def main(cfg: Config):
                         c, k, r = det['cam'], det['kpt'], det['rgt']
                         c = np.asarray(c)
                         k = np.asarray(k)
-                        t = c.reshape(-1, 1, 3)[-1]
-                        p = k.reshape(-1, 21, 3)[-1] + t
-                        ps.append(p)
-                        rs.append(r)
+                        print("########")
+                        print(c.shape)
+                        print(k.shape)
+                        print(r)
+
+                        left_kpts_idx=r.index(0.0) if 0.0 in r else -1
+                        right_kpts_idx=r.index(1.0) if 1.0 in r else -1 
+                        print(left_kpts_idx, right_kpts_idx)
+
+                        for idx in [left_kpts_idx, right_kpts_idx]:
+                            if idx == -1:
+                                continue
+                            t = c.reshape(-1,1,3)[idx]
+                            p = k.reshape(-1,21,3)[idx] + t 
+                            ps.append(p) 
+                            rs.append(r[idx])
+
+
+                        # t = c.reshape(-1, 1, 3)[-1]
+                        # p = k.reshape(-1, 21, 3)[-1] + t
+                        # print(p.shape)
+                        # ps.append(p)
+                        # rs.append(r)
 
                     # <- update `ps_world` output ->
                     for i in range(len(ps)):
-                        state['ps_world'] = (
-                            ps[i] @ world_from_cam[: 3, : 3].T +
-                            world_from_cam[: 3, 3]
-                        )
+                        # state['ps_world'] = (
+                        #     ps[i] @ world_from_cam[: 3, : 3].T +
+                        #     world_from_cam[: 3, 3]
+                        # )
+                        if rs[i] == 0.0: 
+                            state.ps_world_left = (
+                                ps[i] @ world_from_cam[: 3, : 3].T +
+                                world_from_cam[: 3, 3]
+                            )
+                        elif rs[i] == 1.0:
+                            state.ps_world_right = (
+                                ps[i] @ world_from_cam[: 3, : 3].T +
+                                world_from_cam[: 3, 3]
+                            )
+                        else: 
+                            raise ValueError(f"hand side should be identified by 0.0 , 1.0 not {rs[i]}")
 
-                    if cfg.show and len(ps) > 0:
-                        kpts.points = o3d.utility.Vector3dVector(
-                            state
-                            ['ps_world']
-                        )
-
-                        # app = o3d.visualization.gui.Application.instance
-                        # app.post_to_main_thread(win, lambda: vis.update_geometry(kpts))
-
-                        vis.update_geometry(kpts)
-                        for _ in range(4):
-                            vis.poll_events()
-                            vis.update_renderer()
+                        
 
             def loop(state):
                 while True:

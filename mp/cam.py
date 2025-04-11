@@ -11,7 +11,7 @@ import pyrealsense2 as rs
 
 @dataclass
 class CameraConfig:
-    device_id: str = '233622074125'
+    device_id: str = '043322071286'
     img_width: int = 640
     img_height: int = 480
     fps: int = 30
@@ -260,8 +260,9 @@ if __name__ == '__main__':
             return
 
         cam_cfg = MultiRSCamera.Config.map_devices(cfg.cam, cfg.dev)
-        with MultiRSCamera(cam_cfg).open() as cam:
+        with MultiRSCamera(cam_cfg, start=True).open() as cam:
             frame = cam()
+            print('ddd')
             cv2.namedWindow('frame', cv2.WINDOW_NORMAL)
             while True:
                 frame = cam()
