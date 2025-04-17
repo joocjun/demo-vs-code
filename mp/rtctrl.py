@@ -21,6 +21,16 @@ from xmlrpc.client import ServerProxy
 
 
 
+def logging_time(original_fn):
+    def wrapper_fn(*args, **kwargs):
+        start_time = time.time()
+        result = original_fn(*args, **kwargs)
+        end_time = time.time()
+        print("WorkingTime[{}]: {} sec".format(original_fn.__name__, end_time-start_time))
+        return result
+    return wrapper_fn
+
+
 class RequestHandler(SimpleXMLRPCRequestHandler):
     rpc_paths = ('/RPC2',)
 
@@ -35,7 +45,7 @@ class StateCache:
 @dataclass
 class Config:
     cam: CameraConfig = CameraConfig()
-    device_id: str = '819312070397'
+    device_id: str = '043322071286'
 
     fps: float = 30.0
     show: bool = False
@@ -116,7 +126,7 @@ def main(cfg: Config):
             server.register_function(partial(on_kpt, state=state),
                                      'kpt')
 
-            
+            @logging_time
             def step(state: StateCache):
                 frame = cam()
 
@@ -195,14 +205,10 @@ def main(cfg: Config):
                         c, k, r = det['cam'], det['kpt'], det['rgt']
                         c = np.asarray(c)
                         k = np.asarray(k)
-                        print("########")
-                        print(c.shape)
-                        print(k.shape)
-                        print(r)
+                        
 
                         left_kpts_idx=r.index(0.0) if 0.0 in r else -1
                         right_kpts_idx=r.index(1.0) if 1.0 in r else -1 
-                        print(left_kpts_idx, right_kpts_idx)
 
                         for idx in [left_kpts_idx, right_kpts_idx]:
                             if idx == -1:
@@ -213,12 +219,7 @@ def main(cfg: Config):
                             rs.append(r[idx])
 
 
-                        # t = c.reshape(-1, 1, 3)[-1]
-                        # p = k.reshape(-1, 21, 3)[-1] + t
-                        # print(p.shape)
-                        # ps.append(p)
-                        # rs.append(r)
-
+                        
                     # <- update `ps_world` output ->
                     for i in range(len(ps)):
                         # state['ps_world'] = (
@@ -242,7 +243,9 @@ def main(cfg: Config):
 
             def loop(state):
                 while True:
+                    # start = time.time()
                     step(state)
+                    # print('step', time.time() - start)
             # server.service_actions = partial(step, state=state)
             thread = threading.Thread(target=partial(loop, state=state),
                                       daemon=True)
